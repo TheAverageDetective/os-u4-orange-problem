@@ -480,7 +480,7 @@ cat .pes/index    # Human-readable text format
 
 Open `commit.c`. One function is marked `// TODO`:
 
-1. **`commit_create`** - The main commit function:
+1. **`commit_create`** — The main commit function:
    - Builds a tree from the index using `tree_from_index()` (**not** from the working directory — commits snapshot the staged state)
    - Reads current HEAD as the parent (may not exist for first commit)
    - Gets the author string from `pes_author()` (defined in `pes.h`)
@@ -592,6 +592,25 @@ The following questions cover filesystem concepts beyond the implementation scop
 **3. Commit History (Graded Requirement)**
 * **Minimum Requirement:** You must have a minimum of **5 commits per phase** with appropriate commit messages. Submitting fewer than 5 commits for any given phase will result in a deduction of marks.
 * **Best Practices:** We highly prefer more than 5 detailed commits per phase. Granular commits that clearly show the delta in code block changes allow us to verify your step-by-step understanding of the concepts and prevent penalties <3
+---
+
+## Filesystem Concept Coverage
+
+| Concept                     | Where It Appears                                |
+| --------------------------- | ----------------------------------------------- |
+| Content-addressable storage | Phase 1 — object store                          |
+| Directory sharding          | Phase 1 — `.pes/objects/XX/`                    |
+| Atomic writes               | Phases 1, 3, 4 — all writes use temp+rename     |
+| Hashing for integrity       | Phase 1 — corruption detection                  |
+| Directory representation    | Phase 2 — tree objects                          |
+| File modes and permissions  | Phase 2 — tree entries (100644, 100755, 040000) |
+| File format design          | Phase 3 — index text format                     |
+| Change detection            | Phase 3 — mtime+size optimization in status     |
+| Reference files             | Phase 4 — branches and HEAD                     |
+| Linked structures on disk   | Phase 4 — commit parent chain                   |
+| Atomic pointer updates      | Phase 4 — commit publication via ref update     |
+| Working directory sync      | Q5.1 — checkout (analysis)                      |
+| Reachability / free-space   | Q6.1 — garbage collection (analysis)            |
 
 ---
 
