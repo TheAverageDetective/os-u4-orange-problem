@@ -194,7 +194,9 @@ int index_save(const Index *index) {
     qsort(sorted.entries, sorted.count, sizeof(IndexEntry), compare_index_entries);
 
     // Write to temporary file
-    FILE *f = fopen(INDEX_FILE ".tmp", "w");
+    char tmp_path[512];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", INDEX_FILE);
+    FILE *f = fopen(tmp_path, "w");
     if (!f) return -1;
 
     for (int i = 0; i < sorted.count; i++) {
@@ -205,7 +207,7 @@ int index_save(const Index *index) {
         if (fprintf(f, "%o %s %" PRIu64 " %u %s\n",
                    entry->mode, hex, entry->mtime_sec, entry->size, entry->path) < 0) {
             fclose(f);
-            unlink(INDEX_FILE ".tmp");
+            unlink(tmp_path);
             return -1;
         }
     }
@@ -216,8 +218,8 @@ int index_save(const Index *index) {
     fclose(f);
 
     // Atomic rename
-    if (rename(INDEX_FILE ".tmp", INDEX_FILE) != 0) {
-        unlink(INDEX_FILE ".tmp");
+    if (rename(tmp_path, INDEX_FILE) != 0) {
+        unlink(tmp_path);
         return -1;
     }
 

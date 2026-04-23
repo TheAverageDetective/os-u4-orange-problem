@@ -10,6 +10,7 @@
 //   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
 
 #include "tree.h"
+#include "index.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +19,6 @@
 
 // Forward declarations for functions from other modules
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
-int index_load(struct Index *index);
 
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
