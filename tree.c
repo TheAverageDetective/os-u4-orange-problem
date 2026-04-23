@@ -16,6 +16,10 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+// Forward declarations for functions from other modules
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
+int index_load(struct Index *index);
+
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
 #define MODE_FILE      0100644
@@ -129,9 +133,144 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - object_write    : save that binary buffer to the store as OBJ_TREE
 //
 // Returns 0 on success, -1 on error.
+
+typedef struct {
+    uint32_t mode;
+    ObjectID hash;
+    char path[512];
+} SimpleEntry;
+
+// Helper function to recursively build tree objects
+// entries: the index entries at this level
+// count: number of entries
+// prefix_len: length of the current directory prefix (0 for root)
+// Returns 0 on success, sets *id_out to the tree hash
+static int write_tree_level(SimpleEntry *entries, int count, size_t prefix_len, ObjectID *id_out) {
+    if (count == 0) return -1;
+
+    Tree tree;
+    tree.count = 0;
+
+    int i = 0;
+    while (i < count && tree.count < MAX_TREE_ENTRIES) {
+        // Find the next component of the path at this level
+        const char *current_path = entries[i].path + prefix_len;
+        char *slash = strchr(current_path, '/');
+
+        if (slash == NULL) {
+            // This is a file entry at this level
+            strcpy(tree.entries[tree.count].name, current_path);
+            tree.entries[tree.count].mode = entries[i].mode;
+            tree.entries[tree.count].hash = entries[i].hash;
+            tree.count++;
+            i++;
+        } else {
+            // This is a directory entry - collect all files in this subdirectory
+            size_t dir_name_len = slash - current_path;
+            char dir_name[256];
+            strncpy(dir_name, current_path, dir_name_len);
+            dir_name[dir_name_len] = '\0';
+
+            // Collect all entries that start with this directory
+            SimpleEntry *subdir_entries = malloc(sizeof(SimpleEntry) * count);
+            int subdir_count = 0;
+
+            for (int j = i; j < count; j++) {
+                const char *check_path = entries[j].path + prefix_len;
+                if (strncmp(check_path, dir_name, dir_name_len) == 0 &&
+                    (check_path[dir_name_len] == '/' || check_path[dir_name_len] == '\0')) {
+                    subdir_entries[subdir_count] = entries[j];
+                    subdir_count++;
+                }
+            }
+
+            if (subdir_count > 0) {
+                // Recursively build tree for subdirectory
+                ObjectID subdir_id;
+                int rc = write_tree_level(subdir_entries, subdir_count, prefix_len + dir_name_len + 1, &subdir_id);
+                if (rc != 0) {
+                    free(subdir_entries);
+                    return -1;
+                }
+
+                strcpy(tree.entries[tree.count].name, dir_name);
+                tree.entries[tree.count].mode = MODE_DIR;
+                tree.entries[tree.count].hash = subdir_id;
+                tree.count++;
+
+                // Skip all entries in this subdirectory
+                i += subdir_count;
+            }
+
+            free(subdir_entries);
+        }
+    }
+
+    // Serialize and store the tree
+    void *tree_data;
+    size_t tree_len;
+    if (tree_serialize(&tree, &tree_data, &tree_len) != 0) {
+        return -1;
+    }
+
+    int rc = object_write(OBJ_TREE, tree_data, tree_len, id_out);
+    free(tree_data);
+    return rc;
+}
+
 int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
-    return -1;
+    // Load the index
+    struct Index {
+        void *entries;
+        int count;
+    } index;
+    index.entries = NULL;
+    index.count = 0;
+
+    // Use a simpler approach: directly read from index file
+    FILE *f = fopen(".pes/index", "r");
+    if (!f) {
+        // Empty index
+        return -1;
+    }
+
+    SimpleEntry *entries = malloc(sizeof(SimpleEntry) * 10000);
+    if (!entries) {
+        fclose(f);
+        return -1;
+    }
+
+    int entry_count = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), f) != NULL && entry_count < 10000) {
+        unsigned int mode;
+        char hash_hex[65];
+        unsigned long mtime_sec;
+        unsigned int size;
+        char path[512];
+
+        int parsed = sscanf(line, "%o %64s %lu %u %511s", &mode, hash_hex, &mtime_sec, &size, path);
+        if (parsed != 5) continue;
+
+        entries[entry_count].mode = mode;
+        // Convert hex hash to binary
+        for (int i = 0; i < 32; i++) {
+            unsigned int byte;
+            sscanf(hash_hex + i*2, "%2x", &byte);
+            entries[entry_count].hash.hash[i] = (uint8_t)byte;
+        }
+        strcpy(entries[entry_count].path, path);
+        entry_count++;
+    }
+    fclose(f);
+
+    if (entry_count == 0) {
+        free(entries);
+        return -1;
+    }
+
+    // Build tree from entries
+    int rc = write_tree_level(entries, entry_count, 0, id_out);
+    free(entries);
+    return rc;
 }

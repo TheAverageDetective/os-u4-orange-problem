@@ -194,8 +194,50 @@ int head_update(const ObjectID *new_commit) {
 //
 // Returns 0 on success, -1 on error.
 int commit_create(const char *message, ObjectID *commit_id_out) {
-    // TODO: Implement commit creation
-    // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+    // 1. Build tree from index
+    ObjectID tree_id;
+    if (tree_from_index(&tree_id) != 0) {
+        fprintf(stderr, "error: failed to create tree from index\n");
+        return -1;
+    }
+
+    // 2. Create commit object
+    Commit commit;
+    commit.tree = tree_id;
+    commit.has_parent = (head_read(&commit.parent) == 0) ? 1 : 0;
+    
+    // 3. Set author and timestamp
+    const char *author_str = pes_author();
+    snprintf(commit.author, sizeof(commit.author), "%s", author_str);
+    commit.timestamp = (uint64_t)time(NULL);
+
+    // 4. Set message
+    snprintf(commit.message, sizeof(commit.message), "%s", message);
+
+    // 5. Serialize commit
+    void *commit_data;
+    size_t commit_len;
+    if (commit_serialize(&commit, &commit_data, &commit_len) != 0) {
+        fprintf(stderr, "error: failed to serialize commit\n");
+        return -1;
+    }
+
+    // 6. Write commit object to store
+    ObjectID new_commit_id;
+    int rc = object_write(OBJ_COMMIT, commit_data, commit_len, &new_commit_id);
+    free(commit_data);
+    
+    if (rc != 0) {
+        fprintf(stderr, "error: failed to write commit object\n");
+        return -1;
+    }
+
+    // 7. Update HEAD to point to new commit
+    if (head_update(&new_commit_id) != 0) {
+        fprintf(stderr, "error: failed to update HEAD\n");
+        return -1;
+    }
+
+    *commit_id_out = new_commit_id;
+    return 0;
 }
