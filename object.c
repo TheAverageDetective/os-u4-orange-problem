@@ -106,6 +106,7 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     // 1. Build the header
     char header[256];
     int header_len = sprintf(header, "%s %zu", type_str, len);
+    if (header_len < 0 || header_len >= (int)sizeof(header)) return -1;
 
     // 2. Combine header (with the null terminator) + data
     size_t full_len = header_len + 1 + len;  // +1 for the null terminator
@@ -114,7 +115,9 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     
     memcpy(full_object, header, header_len);
     ((char *)full_object)[header_len] = '\0';
-    memcpy((char *)full_object + header_len + 1, data, len);
+    if (len > 0 && data) {
+        memcpy((char *)full_object + header_len + 1, data, len);
+    }
 
     // 3. Compute SHA-256 hash
     compute_hash(full_object, full_len, id_out);
@@ -131,16 +134,27 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 
     // Extract shard directory from path (everything up to the last '/')
     char shard_dir[512];
+    if (strlen(path) >= sizeof(shard_dir)) {
+        free(full_object);
+        return -1;
+    }
     strcpy(shard_dir, path);
     char *last_slash = strrchr(shard_dir, '/');
-    if (last_slash) *last_slash = '\0';
+    if (!last_slash) {
+        free(full_object);
+        return -1;  // Path must have a slash
+    }
+    *last_slash = '\0';
     
     // Create shard directory if it doesn't exist
     mkdir(shard_dir, 0755);
 
     // 6. Write to a temporary file
     char tmp_path[528];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path) >= (int)sizeof(tmp_path)) {
+        free(full_object);
+        return -1;
+    }
 
     int fd = open(tmp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) {
@@ -148,7 +162,8 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
         return -1;
     }
 
-    if (write(fd, full_object, full_len) != (ssize_t)full_len) {
+    ssize_t written = write(fd, full_object, full_len);
+    if (written < 0 || (size_t)written != full_len) {
         close(fd);
         unlink(tmp_path);
         free(full_object);
@@ -156,7 +171,12 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     }
 
     // 7. fsync() the temp file to disk
-    fsync(fd);
+    if (fsync(fd) != 0) {
+        close(fd);
+        unlink(tmp_path);
+        free(full_object);
+        return -1;
+    }
     close(fd);
 
     // 8. Atomic rename

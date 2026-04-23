@@ -234,41 +234,45 @@ int index_save(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_add(Index *index, const char *path) {
-    // 1. Read file contents
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "error: cannot open file '%s'\n", path);
-        return -1;
-    }
-
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    void *file_data = malloc(file_size);
-    if (!file_data) {
-        fclose(f);
-        return -1;
-    }
-
-    if (fread(file_data, 1, file_size, f) != (size_t)file_size) {
-        free(file_data);
-        fclose(f);
-        return -1;
-    }
-    fclose(f);
-
-    // 2. Write blob to object store
-    ObjectID blob_id;
-    if (object_write(OBJ_BLOB, file_data, file_size, &blob_id) != 0) {
-        free(file_data);
-        return -1;
-    }
-
-    // 3. Get file metadata
+    // 1. Get file metadata FIRST
     struct stat st;
     if (stat(path, &st) != 0) {
-        free(file_data);
+        fprintf(stderr, "error: cannot stat file '%s'\n", path);
+        return -1;
+    }
+
+    // 2. Read file contents
+    void *file_data = NULL;
+    size_t file_size = st.st_size;
+    
+    if (file_size > 0) {
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            fprintf(stderr, "error: cannot open file '%s'\n", path);
+            return -1;
+        }
+
+        file_data = malloc(file_size);
+        if (!file_data) {
+            fprintf(stderr, "error: out of memory\n");
+            fclose(f);
+            return -1;
+        }
+
+        if (fread(file_data, 1, file_size, f) != file_size) {
+            fprintf(stderr, "error: failed to read file '%s'\n", path);
+            free(file_data);
+            fclose(f);
+            return -1;
+        }
+        fclose(f);
+    }
+
+    // 3. Write blob to object store
+    ObjectID blob_id;
+    if (object_write(OBJ_BLOB, file_data ? file_data : "", file_size, &blob_id) != 0) {
+        fprintf(stderr, "error: failed to write blob for '%s'\n", path);
+        if (file_data) free(file_data);
         return -1;
     }
 
@@ -283,7 +287,7 @@ int index_add(Index *index, const char *path) {
     if (entry == NULL) {
         // New entry - add to index
         if (index->count >= MAX_INDEX_ENTRIES) {
-            free(file_data);
+            if (file_data) free(file_data);
             fprintf(stderr, "error: index is full\n");
             return -1;
         }
@@ -294,12 +298,12 @@ int index_add(Index *index, const char *path) {
     // Update entry
     entry->mode = mode;
     entry->hash = blob_id;
-    entry->mtime_sec = st.st_mtime;
+    entry->mtime_sec = (uint64_t)st.st_mtime;
     entry->size = (uint32_t)st.st_size;
     strncpy(entry->path, path, sizeof(entry->path) - 1);
     entry->path[sizeof(entry->path) - 1] = '\0';
 
     // 5. Save updated index
-    free(file_data);
+    if (file_data) free(file_data);
     return index_save(index);
 }

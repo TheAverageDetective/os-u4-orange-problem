@@ -141,55 +141,58 @@ typedef struct {
 } SimpleEntry;
 
 // Helper function to recursively build tree objects
-// entries: the index entries at this level
-// count: number of entries
+// entries: pointer to the FULL entries array
+// indices: array of indices to process at this level
+// count: number of indices to process
 // prefix_len: length of the current directory prefix (0 for root)
 // Returns 0 on success, sets *id_out to the tree hash
-static int write_tree_level(SimpleEntry *entries, int count, size_t prefix_len, ObjectID *id_out) {
-    if (count == 0) return -1;
+static int write_tree_level_helper(SimpleEntry *full_entries, int *indices, 
+                                   int count, size_t prefix_len, ObjectID *id_out) {
+    if (count <= 0) return -1;
 
     Tree tree;
     tree.count = 0;
 
     int i = 0;
     while (i < count && tree.count < MAX_TREE_ENTRIES) {
-        // Find the next component of the path at this level
-        const char *current_path = entries[i].path + prefix_len;
-        char *slash = strchr(current_path, '/');
+        SimpleEntry *entry = &full_entries[indices[i]];
+        const char *remaining = entry->path + prefix_len;
+        const char *slash = strchr(remaining, '/');
 
         if (slash == NULL) {
-            // This is a file entry at this level
-            strcpy(tree.entries[tree.count].name, current_path);
-            tree.entries[tree.count].mode = entries[i].mode;
-            tree.entries[tree.count].hash = entries[i].hash;
+            // This is a file at this level
+            strcpy(tree.entries[tree.count].name, remaining);
+            tree.entries[tree.count].mode = entry->mode;
+            tree.entries[tree.count].hash = entry->hash;
             tree.count++;
             i++;
         } else {
-            // This is a directory entry - collect all files in this subdirectory
-            size_t dir_name_len = slash - current_path;
+            // This is a directory - collect all direct children
+            size_t dir_name_len = slash - remaining;
             char dir_name[256];
-            strncpy(dir_name, current_path, dir_name_len);
+            strncpy(dir_name, remaining, dir_name_len);
             dir_name[dir_name_len] = '\0';
 
-            // Collect all entries that start with this directory
-            SimpleEntry *subdir_entries = malloc(sizeof(SimpleEntry) * count);
+            // Find all entries that belong to this directory
+            int *subdir_indices = malloc(sizeof(int) * count);
             int subdir_count = 0;
-
+            
             for (int j = i; j < count; j++) {
-                const char *check_path = entries[j].path + prefix_len;
-                if (strncmp(check_path, dir_name, dir_name_len) == 0 &&
-                    (check_path[dir_name_len] == '/' || check_path[dir_name_len] == '\0')) {
-                    subdir_entries[subdir_count] = entries[j];
-                    subdir_count++;
+                SimpleEntry *check_entry = &full_entries[indices[j]];
+                const char *check = check_entry->path + prefix_len;
+                if (strncmp(check, dir_name, dir_name_len) == 0 &&
+                    check[dir_name_len] == '/') {
+                    subdir_indices[subdir_count++] = indices[j];
                 }
             }
 
             if (subdir_count > 0) {
-                // Recursively build tree for subdirectory
+                // Build subtree for this directory
                 ObjectID subdir_id;
-                int rc = write_tree_level(subdir_entries, subdir_count, prefix_len + dir_name_len + 1, &subdir_id);
+                int rc = write_tree_level_helper(full_entries, subdir_indices, subdir_count,
+                                                prefix_len + dir_name_len + 1, &subdir_id);
                 if (rc != 0) {
-                    free(subdir_entries);
+                    free(subdir_indices);
                     return -1;
                 }
 
@@ -198,11 +201,12 @@ static int write_tree_level(SimpleEntry *entries, int count, size_t prefix_len, 
                 tree.entries[tree.count].hash = subdir_id;
                 tree.count++;
 
-                // Skip all entries in this subdirectory
                 i += subdir_count;
+            } else {
+                i++;
             }
 
-            free(subdir_entries);
+            free(subdir_indices);
         }
     }
 
@@ -219,23 +223,20 @@ static int write_tree_level(SimpleEntry *entries, int count, size_t prefix_len, 
 }
 
 int tree_from_index(ObjectID *id_out) {
-    // Load the index
-    struct Index {
-        void *entries;
-        int count;
-    } index;
-    index.entries = NULL;
-    index.count = 0;
-
-    // Use a simpler approach: directly read from index file
+    // Load from index file directly (simpler approach)
     FILE *f = fopen(".pes/index", "r");
     if (!f) {
-        // Empty index
+        fprintf(stderr, "error: .pes/index not found\n");
         return -1;
     }
 
     SimpleEntry *entries = malloc(sizeof(SimpleEntry) * 10000);
-    if (!entries) {
+    int *indices = malloc(sizeof(int) * 10000);
+    
+    if (!entries || !indices) {
+        fprintf(stderr, "error: out of memory\n");
+        free(entries);
+        free(indices);
         fclose(f);
         return -1;
     }
@@ -250,27 +251,50 @@ int tree_from_index(ObjectID *id_out) {
         char path[512];
 
         int parsed = sscanf(line, "%o %64s %lu %u %511s", &mode, hash_hex, &mtime_sec, &size, path);
-        if (parsed != 5) continue;
+        if (parsed != 5) {
+            fprintf(stderr, "warning: skipping malformed index line\n");
+            continue;
+        }
 
         entries[entry_count].mode = mode;
+        
         // Convert hex hash to binary
+        if (strlen(hash_hex) != 64) {
+            fprintf(stderr, "warning: invalid hash length\n");
+            continue;
+        }
+        
+        int valid = 1;
         for (int i = 0; i < 32; i++) {
             unsigned int byte;
-            sscanf(hash_hex + i*2, "%2x", &byte);
+            if (sscanf(hash_hex + i*2, "%2x", &byte) != 1) {
+                fprintf(stderr, "warning: invalid hex in hash\n");
+                valid = 0;
+                break;
+            }
             entries[entry_count].hash.hash[i] = (uint8_t)byte;
         }
-        strcpy(entries[entry_count].path, path);
+        
+        if (!valid) continue;
+        
+        strncpy(entries[entry_count].path, path, sizeof(entries[entry_count].path) - 1);
+        entries[entry_count].path[sizeof(entries[entry_count].path) - 1] = '\0';
+        
+        indices[entry_count] = entry_count;
         entry_count++;
     }
     fclose(f);
 
     if (entry_count == 0) {
+        fprintf(stderr, "error: no entries in index\n");
         free(entries);
+        free(indices);
         return -1;
     }
 
     // Build tree from entries
-    int rc = write_tree_level(entries, entry_count, 0, id_out);
+    int rc = write_tree_level_helper(entries, indices, entry_count, 0, id_out);
     free(entries);
+    free(indices);
     return rc;
 }
