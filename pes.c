@@ -41,27 +41,42 @@ void cmd_add(int argc, char *argv[]) {
         return;
     }
 
-    Index index;
-    if (index_load(&index) != 0) {
+    Index *index = malloc(sizeof(Index));
+    if (!index) {
+        fprintf(stderr, "error: out of memory\n");
+        return;
+    }
+
+    if (index_load(index) != 0) {
         fprintf(stderr, "error: failed to load index\n");
+        free(index);
         return;
     }
 
     for (int i = 2; i < argc; i++) {
-        if (index_add(&index, argv[i]) != 0) {
+        if (index_add(index, argv[i]) != 0) {
             fprintf(stderr, "error: failed to add '%s'\n", argv[i]);
         }
     }
+
+    free(index);
 }
 
 // Usage: pes status
 void cmd_status(void) {
-    Index index;
-    if (index_load(&index) != 0) {
-        fprintf(stderr, "error: failed to load index\n");
+    Index *index = malloc(sizeof(Index));
+    if (!index) {
+        fprintf(stderr, "error: out of memory\n");
         return;
     }
-    index_status(&index);
+
+    if (index_load(index) != 0) {
+        fprintf(stderr, "error: failed to load index\n");
+        free(index);
+        return;
+    }
+    index_status(index);
+    free(index);
 }
 
 // Usage: pes commit -m <message>
